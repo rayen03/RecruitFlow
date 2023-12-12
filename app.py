@@ -1,73 +1,85 @@
 import streamlit as st
-import pandas as pd
-from gensim.models.doc2vec import Doc2Vec, TaggedDocument
+from gensim.models.doc2vec import Doc2Vec
+from gensim.models.doc2vec import TaggedDocument
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import MinMaxScaler
+import pandas as pd
 import os
-from io import StringIO
+from io import BytesIO
+import tempfile
+import shutil
 import csv
-import pdfx
-import glob
 
 # Function to extract text from PDF files
 def extract_text_from_pdf(pdf_file):
-    with open(pdf_file, 'rb') as file:
-        pdf_reader = pdfx.PDFx(file)
-        text = pdf_reader.get_text()
-        return text
+    if isinstance(pdf_file, BytesIO):
+        pdf_content = pdf_file.read()
+        codecs_to_try = ['utf-8', 'latin-1']
+        pdf_content_str = None
 
-# Function to preprocess text
-def preprocess_text(text):
-    # You may add your text preprocessing steps here
-    return text.lower()
+        for codec in codecs_to_try:
+            try:
+                pdf_content_str = pdf_content.decode(codec)
+                break
+            except UnicodeDecodeError:
+                continue
 
-# Function to load and preprocess the job description
-def load_and_preprocess_job_description(job_description):
-    return preprocess_text(job_description)
+        if pdf_content_str is None:
+            raise UnicodeDecodeError("Unable to decode PDF content with available codecs.")
 
-# Function to load and preprocess CVs
-def load_and_preprocess_cvs(pdf_files):
-    cv_data = pd.DataFrame(columns=['Parsed_text'])
-    for pdf_file in pdf_files:
-        text = extract_text_from_pdf(pdf_file)
-        parsed_text = preprocess_text(text)
-        cv_data = cv_data.append({'Parsed_text': parsed_text}, ignore_index=True)
-    return cv_data
+        return pdf_content_str
+    else:
+        raise ValueError("Invalid input. Expected BytesIO object.")
 
-# Function to rank CVs based on Doc2Vec model
-def rank_cvs(doc2vec_model, job_vector, cv_data):
-    cv_vectors = [doc2vec_model.infer_vector(text.split()) for text in cv_data['Parsed_text']]
-    similarity_scores = cosine_similarity([job_vector], cv_vectors)[0]
-    return similarity_scores
-
+# Function to parse PDFs and save to CSV
 def parser(pdf_files, output_csv):
     # Create a list to store tuples of (pdf_file_name, parsed_text)
     parsed_data = []
 
     for pdf_file in pdf_files:
         if pdf_file.name.endswith(".pdf"):
-            # Parse
-            pdf = pdfx.PDFx(pdf_file)
-            parsed_text = pdf.get_text()
-
+            # Extract text from PDF
+            text = extract_text_from_pdf(pdf_file)
+            
             # Append the tuple to the list
-            parsed_data.append((pdf_file.name, parsed_text))
+            parsed_data.append((pdf_file.name, text))
 
-    # Save the parsed data to a CSV file
-    with open(output_csv, 'w', newline='', encoding='utf-8') as csv_file:
-        csv_writer = csv.writer(csv_file)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='', encoding='utf-8') as csv_file:
+        csv_writer = csv.writer(csv_file, escapechar='\\')  # Specify escapechar
         csv_writer.writerow(['PDF File Name', 'Parsed Text'])  # Write header
 
         for pdf_name, parsed_text in parsed_data:
             csv_writer.writerow([pdf_name, parsed_text])
 
+    # Move the temporary file to the desired location
+    shutil.move(csv_file.name, output_csv)
 
-    # Save the parsed data to a CSV file
-    with open(output_csv, 'w', newline='', encoding='utf-8') as csv_file:
-        csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(['PDF File Name', 'Parsed Text'])  # Write header
+# Function to load and preprocess job description
+def load_and_preprocess_job_description(job_description):
+    # Add your preprocessing steps here if needed
+    return job_description
 
-        for pdf_name, parsed_text in parsed_data:
-            csv_writer.writerow([pdf_name, parsed_text])
+# Function to load and preprocess CVs
+def load_and_preprocess_cvs(pdf_files):
+    cv_data = pd.DataFrame(columns=['PDF File Name', 'Parsed Text'])
+
+    for pdf_file in pdf_files:
+        if pdf_file.name.endswith(".pdf"):
+            # Extract text from PDF
+            text = extract_text_from_pdf(pdf_file)
+            cv_data = cv_data.append({'PDF File Name': pdf_file.name, 'Parsed Text': text}, ignore_index=True)
+
+    return cv_data
+
+# Function to rank CVs
+def rank_cvs(doc2vec_model, job_vector, cv_data):
+    cv_vectors = [doc2vec_model.infer_vector(text.split()) for text in cv_data['Parsed Text']]
+    similarity_matrix = cosine_similarity([job_vector], cv_vectors)
+    
+    scaler = MinMaxScaler()
+    normalized_similarity = scaler.fit_transform(similarity_matrix.T).T
+
+    return normalized_similarity[0]
 
 # Streamlit App
 def main():
@@ -90,7 +102,7 @@ def main():
             parser(pdf_files, csv_file)
 
             # Load Doc2Vec model (modify the path accordingly)
-            model_path = r"C:\Users\rayen\OneDrive\Desktop\LCS3\AI (mini project)\RecruitFlow\modelData"
+            model_path = r"C:\Users\rayen\OneDrive\Desktop\LCS3\AI (mini project)\RecruitFlow\modelData\doc2vec_model.model"
             doc2vec_model = Doc2Vec.load(model_path)
 
             # Load and preprocess job description
@@ -106,8 +118,7 @@ def main():
 
             # Display Results
             st.subheader("Ranked CVs:")
-            st.table(cv_data.sort_values(by='Ranking_Score', ascending=False)[['Parsed_text', 'Ranking_Score']])
-
+            st.table(cv_data.sort_values(by='Ranking_Score', ascending=False)[['Parsed Text', 'Ranking_Score']])
 
 if __name__ == "__main__":
     main()
